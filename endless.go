@@ -30,7 +30,7 @@ const (
 
 var (
 	runningServerReg     sync.Mutex
-	runningServers       map[string]*endlessServer
+	runningServers       map[string]*Server
 	runningServersOrder  []string
 	socketPtrOffsetMap   map[string]uint
 	runningServersForked bool
@@ -49,7 +49,7 @@ func init() {
 	flag.StringVar(&socketOrder, "socketorder", "", "previous initialization order - used when more than one listener was started")
 
 	runningServerReg = sync.Mutex{}
-	runningServers = make(map[string]*endlessServer)
+	runningServers = make(map[string]*Server)
 	runningServersOrder = []string{}
 	socketPtrOffsetMap = make(map[string]uint)
 
@@ -60,7 +60,7 @@ func init() {
 	DefaultHammerTime = 60 * time.Second
 }
 
-type endlessServer struct {
+type Server struct {
 	http.Server
 	EndlessListener  net.Listener
 	SignalHooks      map[int]map[os.Signal][]func()
@@ -72,10 +72,10 @@ type endlessServer struct {
 }
 
 /*
-NewServer returns an intialized endlessServer Object. Calling Serve on it will
+NewServer returns an intialized Server Object. Calling Serve on it will
 actually "start" the server.
 */
-func NewServer(addr string, handler http.Handler) (srv *endlessServer) {
+func NewServer(addr string, handler http.Handler) (srv *Server) {
 	runningServerReg.Lock()
 	defer runningServerReg.Unlock()
 	if !flag.Parsed() {
@@ -89,7 +89,7 @@ func NewServer(addr string, handler http.Handler) (srv *endlessServer) {
 		socketPtrOffsetMap[addr] = uint(len(runningServersOrder))
 	}
 
-	srv = &endlessServer{
+	srv = &Server{
 		wg:      sync.WaitGroup{},
 		sigChan: make(chan os.Signal),
 		isChild: isChild,
@@ -158,7 +158,7 @@ In addition to the stl Serve behaviour each connection is added to a
 sync.Waitgroup so that all outstanding connections can be served before shutting
 down the server.
 */
-func (srv *endlessServer) Serve() (err error) {
+func (srv *Server) Serve() (err error) {
 	srv.state = STATE_RUNNING
 	err = srv.Server.Serve(srv.EndlessListener)
 	log.Println(syscall.Getpid(), "Waiting for connections to finish...")
@@ -172,7 +172,7 @@ ListenAndServe listens on the TCP network address srv.Addr and then calls Serve
 to handle requests on incoming connections. If srv.Addr is blank, ":http" is
 used.
 */
-func (srv *endlessServer) ListenAndServe() (err error) {
+func (srv *Server) ListenAndServe() (err error) {
 	addr := srv.Addr
 	if addr == "" {
 		addr = ":http"
@@ -207,7 +207,7 @@ CA's certificate.
 
 If srv.Addr is blank, ":https" is used.
 */
-func (srv *endlessServer) ListenAndServeTLS(certFile, keyFile string) (err error) {
+func (srv *Server) ListenAndServeTLS(certFile, keyFile string) (err error) {
 	addr := srv.Addr
 	if addr == "" {
 		addr = ":https"
@@ -250,7 +250,7 @@ func (srv *endlessServer) ListenAndServeTLS(certFile, keyFile string) (err error
 getListener either opens a new socket to listen on, or takes the acceptor socket
 it got passed when restarted.
 */
-func (srv *endlessServer) getListener(laddr string) (l net.Listener, err error) {
+func (srv *Server) getListener(laddr string) (l net.Listener, err error) {
 	if srv.isChild {
 		var ptrOffset uint = 0
 		if len(socketPtrOffsetMap) > 0 {
@@ -278,7 +278,7 @@ func (srv *endlessServer) getListener(laddr string) (l net.Listener, err error) 
 handleSignals listens for os Signals and calls any hooked in function that the
 user had registered with the signal.
 */
-func (srv *endlessServer) handleSignals() {
+func (srv *Server) handleSignals() {
 	var sig os.Signal
 
 	signal.Notify(
@@ -322,7 +322,7 @@ func (srv *endlessServer) handleSignals() {
 	}
 }
 
-func (srv *endlessServer) signalHooks(ppFlag int, sig os.Signal) {
+func (srv *Server) signalHooks(ppFlag int, sig os.Signal) {
 	if _, notSet := srv.SignalHooks[ppFlag][sig]; !notSet {
 		return
 	}
@@ -337,7 +337,7 @@ shutdown closes the listener so that no new connections are accepted. it also
 starts a goroutine that will hammer (stop all running requests) the server
 after DefaultHammerTime.
 */
-func (srv *endlessServer) shutdown() {
+func (srv *Server) shutdown() {
 	if srv.state != STATE_RUNNING {
 		return
 	}
@@ -363,7 +363,7 @@ srv.Serve() will not return until all connections are served. this will
 unblock the srv.wg.Wait() in Serve() thus causing ListenAndServe(TLS) to
 return.
 */
-func (srv *endlessServer) hammerTime(d time.Duration) {
+func (srv *Server) hammerTime(d time.Duration) {
 	defer func() {
 		// we are calling srv.wg.Done() until it panics which means we called
 		// Done() when the counter was already at 0 and we're done.
@@ -385,7 +385,7 @@ func (srv *endlessServer) hammerTime(d time.Duration) {
 	}
 }
 
-func (srv *endlessServer) fork() (err error) {
+func (srv *Server) fork() (err error) {
 	// only one server isntance should fork!
 	runningServerReg.Lock()
 	defer runningServerReg.Unlock()
@@ -449,7 +449,7 @@ type endlessListener struct {
 	net.Listener
 	stop    chan error
 	stopped bool
-	server  *endlessServer
+	server  *Server
 }
 
 func (el *endlessListener) Accept() (c net.Conn, err error) {
@@ -470,7 +470,7 @@ func (el *endlessListener) Accept() (c net.Conn, err error) {
 	return
 }
 
-func newEndlessListener(l net.Listener, srv *endlessServer) (el *endlessListener) {
+func newEndlessListener(l net.Listener, srv *Server) (el *endlessListener) {
 	el = &endlessListener{
 		Listener: l,
 		stop:     make(chan error),
@@ -505,7 +505,7 @@ func (el *endlessListener) File() *os.File {
 
 type endlessConn struct {
 	net.Conn
-	server *endlessServer
+	server *Server
 }
 
 func (w endlessConn) Close() error {
